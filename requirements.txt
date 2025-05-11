@@ -1,4 +1,4 @@
 ﻿fastapi==0.115.0
 uvicorn==0.30.6
 numpy==1.26.2
-torch==2.6.0+cpu
+torch==2.6.0
