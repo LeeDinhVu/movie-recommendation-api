@@ -5,6 +5,7 @@ import pandas as pd
 from fastapi import FastAPI
 import logging
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
+from sklearn.feature_extraction.text import TfidfVectorizer
 
 app = FastAPI()
 
@@ -12,6 +13,7 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Định nghĩa lớp mô hình
 class TransformerRecommender(nn.Module):
     def __init__(self, num_users, num_movies, num_genres, num_countries, num_genders, num_occupations,
                  num_directors, num_actors, tfidf_dim, embed_dim=64, num_heads=4, num_layers=2):
@@ -37,89 +39,89 @@ class TransformerRecommender(nn.Module):
         self.fc = nn.Linear(embed_dim, 1)
         self.sigmoid = nn.Sigmoid()
 
-    def forward(self, user_id, movie_ids, age, gender, occupation, release_year, country, director, genres, main_actors, synopsis_tfidf):
+    def forward(self, user_id, movie_id, age, gender, occupation, release_year, country, director, genres, main_actors, synopsis_tfidf):
         batch_size = user_id.size(0)
-        num_movies = movie_ids.size(1)
 
-        user_emb = self.user_embedding(user_id).unsqueeze(1).expand(-1, num_movies, -1)
-        movie_emb = self.movie_embedding(movie_ids)
-        gender_emb = self.gender_embedding(gender).unsqueeze(1).expand(-1, num_movies, -1)
-        occupation_emb = self.occupation_embedding(occupation).unsqueeze(1).expand(-1, num_movies, -1)
-        country_emb = self.country_embedding(country).unsqueeze(1).expand(-1, num_movies, -1)
-        director_emb = self.director_embedding(director).unsqueeze(1).expand(-1, num_movies, -1)
+        user_emb = self.user_embedding(user_id)
+        movie_emb = self.movie_embedding(movie_id)
+        gender_emb = self.gender_embedding(gender)
+        occupation_emb = self.occupation_embedding(occupation)
+        country_emb = self.country_embedding(country)
+        director_emb = self.director_embedding(director)
 
-        age_emb = self.age_linear(age.unsqueeze(-1)).unsqueeze(1).expand(-1, num_movies, -1)
-        release_year_emb = self.release_year_linear(release_year.unsqueeze(-1)).unsqueeze(1).expand(-1, num_movies, -1)
+        age_emb = self.age_linear(age.unsqueeze(-1))
+        release_year_emb = self.release_year_linear(release_year.unsqueeze(-1))
         synopsis_emb = self.synopsis_linear(synopsis_tfidf)
 
         genre_emb = self.genre_embedding(genres)
-        genre_emb = genre_emb.mean(dim=1).unsqueeze(1).expand(-1, num_movies, -1)
+        genre_emb = genre_emb.mean(dim=1) if genre_emb.size(1) > 0 else torch.zeros(batch_size, self.embed_dim).to(user_id.device)
         actor_emb = self.actor_embedding(main_actors)
-        actor_emb = actor_emb.mean(dim=1).unsqueeze(1).expand(-1, num_movies, -1)
+        actor_emb = actor_emb.mean(dim=1) if actor_emb.size(1) > 0 else torch.zeros(batch_size, self.embed_dim).to(user_id.device)
 
-        combined = (user_emb + movie_emb + gender_emb + occupation_emb + country_emb + director_emb +
-                    age_emb + release_year_emb + synopsis_emb + genre_emb + actor_emb)
-        combined = combined.permute(1, 0, 2)
+        combined = user_emb + movie_emb + gender_emb + occupation_emb + country_emb + director_emb + \
+                   age_emb + release_year_emb + synopsis_emb + genre_emb + actor_emb
+        combined = combined.unsqueeze(0)
 
         transformer_out = self.transformer(combined)
-        transformer_out = transformer_out.permute(1, 0, 2)
+        transformer_out = transformer_out.squeeze(0)
 
         output = self.fc(transformer_out)
         output = self.sigmoid(output) * 5.0
-        return output.squeeze(-1)
+        return output.squeeze()
 
 # Tiền xử lý dữ liệu
 try:
     movies_df = pd.read_csv("movies.csv", names=['movieId', 'title', 'release_year', 'genres', 'synopsis', 'director', 'main_actors', 'country'], skiprows=1)
     users_df = pd.read_csv("users.csv", names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
 
-    # Tiền xử lý movies.csv
-    le_country = LabelEncoder()
-    le_director = LabelEncoder()
-    le_genres = LabelEncoder()
-    le_actors = LabelEncoder()
+    movies_df[['genres', 'country', 'director', 'main_actors', 'synopsis']] = movies_df[['genres', 'country', 'director', 'main_actors', 'synopsis']].fillna('Unknown')
+    users_df[['occupation']] = users_df[['occupation']].fillna('Unknown')
+
+    label_encoders = {}
+    movies_df['genres'] = movies_df['genres'].str.split('|')
+    all_genres = set(g for genres in movies_df['genres'] for g in genres)
+    genre_encoder = LabelEncoder()
+    genre_encoder.fit(list(all_genres))
+    label_encoders['genres'] = genre_encoder
+
+    country_encoder = LabelEncoder()
+    movies_df['country'] = country_encoder.fit_transform(movies_df['country'])
+    label_encoders['country'] = country_encoder
+
+    gender_encoder = LabelEncoder()
+    users_df['gender'] = gender_encoder.fit_transform(users_df['gender'])
+    label_encoders['gender'] = gender_encoder
+
+    occupation_encoder = LabelEncoder()
+    users_df['occupation'] = occupation_encoder.fit_transform(users_df['occupation'])
+    label_encoders['occupation'] = occupation_encoder
+
+    director_encoder = LabelEncoder()
+    movies_df['director'] = director_encoder.fit_transform(movies_df['director'])
+    label_encoders['director'] = director_encoder
+
+    movies_df['main_actors'] = movies_df['main_actors'].str.split('|')
+    all_actors = set(a for actors in movies_df['main_actors'] for a in actors)
+    actor_encoder = LabelEncoder()
+    actor_encoder.fit(list(all_actors))
+    label_encoders['main_actors'] = actor_encoder
+
     scaler = MinMaxScaler()
+    movies_df['release_year'] = scaler.fit_transform(movies_df[['release_year']].astype(float))
+    users_df['age'] = scaler.fit_transform(users_df[['age']].astype(float))
 
-    movies_df['country'] = movies_df['country'].fillna('Unknown')
-    movies_df['director'] = movies_df['director'].fillna('Unknown')
-    movies_df['genres'] = movies_df['genres'].fillna('Unknown')
-    movies_df['main_actors'] = movies_df['main_actors'].fillna('Unknown')
-    movies_df['synopsis'] = movies_df['synopsis'].fillna('')
-
-    movies_df['country_encoded'] = le_country.fit_transform(movies_df['country'])
-    movies_df['director_encoded'] = le_director.fit_transform(movies_df['director'])
-
-    # Xử lý genres và main_actors (giả sử là danh sách chuỗi, ví dụ: "Action|Comedy")
-    movies_df['genres_list'] = movies_df['genres'].apply(lambda x: x.split(',')[:3])  # Lấy tối đa 3 thể loại
-    movies_df['actors_list'] = movies_df['main_actors'].apply(lambda x: x.split(',')[:3])  # Lấy tối đa 3 diễn viên
-
-    # Tạo danh sách tất cả genres và actors duy nhất
-    all_genres = set()
-    all_actors = set()
-    for genres in movies_df['genres_list']:
-        all_genres.update(genres)
-    for actors in movies_df['actors_list']:
-        all_actors.update(actors)
-
-    # Mã hóa genres và actors
-    le_genres.fit(list(all_genres))
-    le_actors.fit(list(all_actors))
-
-    movies_df['genres_encoded'] = movies_df['genres_list'].apply(lambda x: [le_genres.transform([g])[0] for g in x if g in le_genres.classes_])
-    movies_df['actors_encoded'] = movies_df['actors_list'].apply(lambda x: [le_actors.transform([a])[0] for a in x if a in le_actors.classes_])
-
-    # Chuẩn hóa release_year
-    movies_df['release_year'] = movies_df['release_year'].fillna(movies_df['release_year'].median())
-    movies_df['release_year_scaled'] = scaler.fit_transform(movies_df[['release_year']])
+    tfidf = TfidfVectorizer(max_features=100)
+    synopsis_tfidf = tfidf.fit_transform(movies_df['synopsis']).toarray()
+    movies_df['synopsis_tfidf'] = list(synopsis_tfidf)
 
     num_users = users_df['userId'].max() + 1
     num_movies = movies_df['movieId'].max() + 1
-    num_genres = len(le_genres.classes_)
-    num_countries = len(le_country.classes_)
-    num_genders = 2
-    num_occupations = 21
-    num_directors = len(le_director.classes_)
-    num_actors = len(le_actors.classes_)
+    num_genres = len(label_encoders['genres'].classes_)
+    num_countries = len(label_encoders['country'].classes_)
+    num_genders = len(label_encoders['gender'].classes_)
+    num_occupations = len(label_encoders['occupation'].classes_)
+    num_directors = len(label_encoders['director'].classes_)
+    num_actors = len(label_encoders['main_actors'].classes_)
     tfidf_dim = 100
 
     model = TransformerRecommender(
@@ -155,74 +157,40 @@ async def recommend(data: dict):
 
         user_data = users_df[users_df['userId'] == user_id].iloc[0]
         age = float(user_data['age'])
-
-        # Ánh xạ giá trị cho gender
-        gender_mapping = {'m': 1, 'male': 1, 'f': 0, 'female': 0}
-        gender_value = str(user_data['gender']).lower()
-        gender = gender_mapping.get(gender_value, None)
-        if gender is None:
-            raise ValueError(f"Giá trị giới tính không hợp lệ: {gender_value}")
-
-        # Ánh xạ giá trị cho occupation
-        occupation_mapping = {
-            'administrator': 1,
-            'artist': 2,
-            'doctor': 3,
-            'educator': 4,
-            'engineer': 5,
-            'entertainment': 6,
-            'executive': 7,
-            'healthcare': 8,
-            'homemaker': 9,
-            'lawyer': 10,
-            'librarian': 11,
-            'marketing': 12,
-            'none': 13,
-            'other': 14,
-            'programmer': 15,
-            'retired': 16,
-            'salesman': 17,
-            'student': 18,
-            'scientist': 19,
-            'writer': 20,
-            'technician': 21
-        }
-        occupation_value = str(user_data['occupation']).lower()
-        occupation = occupation_mapping.get(occupation_value, None)
-        if occupation is None:
-            raise ValueError(f"Giá trị nghề nghiệp không hợp lệ: {occupation_value}")
+        gender = int(user_data['gender'])
+        occupation = int(user_data['occupation'])
 
         movie_ids = torch.tensor(movies_df['movieId'].values, dtype=torch.long)
         num_movies = len(movie_ids)
 
-        # Tạo tensor từ dữ liệu đã tiền xử lý
-        age_tensor = torch.tensor([age] * num_movies, dtype=torch.float).unsqueeze(0)
-        gender_tensor = torch.tensor([gender] * num_movies, dtype=torch.long).unsqueeze(0)
-        occupation_tensor = torch.tensor([occupation] * num_movies, dtype=torch.long).unsqueeze(0)
-        release_year = torch.tensor(movies_df['release_year_scaled'].values, dtype=torch.float).unsqueeze(0)
-        country = torch.tensor(movies_df['country_encoded'].values, dtype=torch.long).unsqueeze(0)
-        director = torch.tensor(movies_df['director_encoded'].values, dtype=torch.long).unsqueeze(0)
+        age_tensor = torch.tensor([age] * num_movies, dtype=torch.float)
+        gender_tensor = torch.tensor([gender] * num_movies, dtype=torch.long)
+        occupation_tensor = torch.tensor([occupation] * num_movies, dtype=torch.long)
+        release_year = torch.tensor(movies_df['release_year'].values, dtype=torch.float)
+        country = torch.tensor(movies_df['country'].values, dtype=torch.long)
+        director = torch.tensor(movies_df['director'].values, dtype=torch.long)
 
-        # Xử lý genres và main_actors (padding để có kích thước cố định)
         max_genres = 3
         max_actors = 3
         genres_padded = np.zeros((num_movies, max_genres), dtype=np.int64)
         actors_padded = np.zeros((num_movies, max_actors), dtype=np.int64)
 
         for i in range(num_movies):
-            genres = movies_df['genres_encoded'].iloc[i]
-            actors = movies_df['actors_encoded'].iloc[i]
-            genres_padded[i, :len(genres)] = genres[:max_genres]
-            actors_padded[i, :len(actors)] = actors[:max_actors]
+            genres = movies_df['genres'].iloc[i]
+            actors = movies_df['main_actors'].iloc[i]
+            genre_ids = label_encoders['genres'].transform([g for g in genres if g in label_encoders['genres'].classes_])
+            actor_ids = label_encoders['main_actors'].transform([a for a in actors if a in label_encoders['main_actors'].classes_])
+            genres_padded[i] = np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant')[:3]
+            actors_padded[i] = np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')[:3]
 
-        genres_tensor = torch.tensor(genres_padded, dtype=torch.long).unsqueeze(0)
-        main_actors_tensor = torch.tensor(actors_padded, dtype=torch.long).unsqueeze(0)
+        genres_tensor = torch.tensor(genres_padded, dtype=torch.long)
+        main_actors_tensor = torch.tensor(actors_padded, dtype=torch.long)
         synopsis_tfidf = torch.tensor([user_features] * num_movies, dtype=torch.float)
 
         with torch.no_grad():
             output = model(
                 torch.tensor([user_id] * num_movies, dtype=torch.long),
-                movie_ids.unsqueeze(0),
+                movie_ids,
                 age_tensor,
                 gender_tensor,
                 occupation_tensor,
@@ -234,7 +202,7 @@ async def recommend(data: dict):
                 synopsis_tfidf
             )
 
-        top_indices = torch.topk(output[0], 5).indices
+        top_indices = torch.topk(output, 5).indices
         top_movie_ids = movie_ids[top_indices].tolist()
 
         return top_movie_ids
