@@ -2,10 +2,11 @@ import torch
 import torch.nn as nn
 import numpy as np
 import pandas as pd
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 import logging
 from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 
 app = FastAPI()
 
@@ -71,14 +72,17 @@ class TransformerRecommender(nn.Module):
 
 # Tiền xử lý dữ liệu
 try:
-    movies_df = pd.read_csv("movies.csv", names=['movieId', 'title', 'release_year', 'genres', 'synopsis', 'director', 'main_actors', 'country'], skiprows=1)
-    users_df = pd.read_csv("users.csv", names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
+    # Đọc file CSV với phân tách là dấu |
+    movies_df = pd.read_csv("movies.csv", sep='', names=['movieId', 'title', 'release_year', 'country', 'genres', 'director', 'main_actors', 'synopsis'], skiprows=1)
+    users_df = pd.read_csv("users.csv", sep='', names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
 
+    # Xử lý giá trị khuyết
     movies_df[['genres', 'country', 'director', 'main_actors', 'synopsis']] = movies_df[['genres', 'country', 'director', 'main_actors', 'synopsis']].fillna('Unknown')
     users_df[['occupation']] = users_df[['occupation']].fillna('Unknown')
 
+    # Mã hóa các cột dạng categorical
     label_encoders = {}
-    movies_df['genres'] = movies_df['genres'].str.split('|')
+    movies_df['genres'] = movies_df['genres'].str.split(',')  # Dùng dấu ; để tách genres
     all_genres = set(g for genres in movies_df['genres'] for g in genres)
     genre_encoder = LabelEncoder()
     genre_encoder.fit(list(all_genres))
@@ -100,20 +104,37 @@ try:
     movies_df['director'] = director_encoder.fit_transform(movies_df['director'])
     label_encoders['director'] = director_encoder
 
-    movies_df['main_actors'] = movies_df['main_actors'].str.split('|')
+    movies_df['main_actors'] = movies_df['main_actors'].str.split(',')
     all_actors = set(a for actors in movies_df['main_actors'] for a in actors)
     actor_encoder = LabelEncoder()
     actor_encoder.fit(list(all_actors))
     label_encoders['main_actors'] = actor_encoder
 
+    # Chuẩn hóa các cột số
     scaler = MinMaxScaler()
     movies_df['release_year'] = scaler.fit_transform(movies_df[['release_year']].astype(float))
     users_df['age'] = scaler.fit_transform(users_df[['age']].astype(float))
 
+    # Chuyển synopsis thành vector TF-IDF
     tfidf = TfidfVectorizer(max_features=100)
     synopsis_tfidf = tfidf.fit_transform(movies_df['synopsis']).toarray()
     movies_df['synopsis_tfidf'] = list(synopsis_tfidf)
 
+    # Tạo ma trận tương đồng dựa trên genres, director, main_actors, country
+    def get_movie_features(row):
+        genre_ids = label_encoders['genres'].transform([g for g in row['genres'] if g in label_encoders['genres'].classes_])
+        actor_ids = label_encoders['main_actors'].transform([a for a in row['main_actors'] if a in label_encoders['main_actors'].classes_])
+        return np.concatenate([
+            np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant')[:3],
+            [row['country']],
+            [row['director']],
+            np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')[:3]
+        ])
+
+    movie_features = np.array([get_movie_features(row) for _, row in movies_df.iterrows()])
+    similarity_matrix = cosine_similarity(movie_features)
+
+    # Khởi tạo các tham số cho mô hình
     num_users = users_df['userId'].max() + 1
     num_movies = movies_df['movieId'].max() + 1
     num_genres = len(label_encoders['genres'].classes_)
@@ -124,6 +145,7 @@ try:
     num_actors = len(label_encoders['main_actors'].classes_)
     tfidf_dim = 100
 
+    # Khởi tạo mô hình
     model = TransformerRecommender(
         num_users=num_users,
         num_movies=num_movies,
@@ -139,6 +161,7 @@ try:
         num_layers=2
     )
 
+    # Tải trọng số mô hình
     model.load_state_dict(torch.load("transformer_recommender_stable.pth", map_location=torch.device('cpu')))
     model.eval()
 except Exception as e:
@@ -149,17 +172,21 @@ except Exception as e:
 async def recommend(data: dict):
     try:
         user_id = data.get("user_id")
-        user_features = np.array(data.get("user_features"), dtype=np.float32)
+        movie_id = data.get("movie_id")
+        if user_id is None:
+            raise HTTPException(status_code=400, detail="Missing user_id in request")
 
         if user_id not in users_df['userId'].values:
             logger.warning(f"User ID {user_id} not found in users.csv")
-            return {"error": "User ID not found"}
+            raise HTTPException(status_code=404, detail=f"User ID {user_id} not found")
 
+        # Lấy thông tin người dùng từ users.csv
         user_data = users_df[users_df['userId'] == user_id].iloc[0]
         age = float(user_data['age'])
         gender = int(user_data['gender'])
         occupation = int(user_data['occupation'])
 
+        # Chuẩn bị dữ liệu đầu vào cho mô hình
         movie_ids = torch.tensor(movies_df['movieId'].values, dtype=torch.long)
         num_movies = len(movie_ids)
 
@@ -170,6 +197,7 @@ async def recommend(data: dict):
         country = torch.tensor(movies_df['country'].values, dtype=torch.long)
         director = torch.tensor(movies_df['director'].values, dtype=torch.long)
 
+        # Xử lý genres và main_actors
         max_genres = 3
         max_actors = 3
         genres_padded = np.zeros((num_movies, max_genres), dtype=np.int64)
@@ -180,13 +208,16 @@ async def recommend(data: dict):
             actors = movies_df['main_actors'].iloc[i]
             genre_ids = label_encoders['genres'].transform([g for g in genres if g in label_encoders['genres'].classes_])
             actor_ids = label_encoders['main_actors'].transform([a for a in actors if a in label_encoders['main_actors'].classes_])
-            genres_padded[i] = np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant')[:3]
-            actors_padded[i] = np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')[:3]
+            genres_padded[i] = np.pad(genre_ids, (0, max_genres - len(genre_ids)), 'constant')[:max_genres]
+            actors_padded[i] = np.pad(actor_ids, (0, max_actors - len(actor_ids)), 'constant')[:max_actors]
 
         genres_tensor = torch.tensor(genres_padded, dtype=torch.long)
         main_actors_tensor = torch.tensor(actors_padded, dtype=torch.long)
-        synopsis_tfidf = torch.tensor([user_features] * num_movies, dtype=torch.float)
 
+        # Tạo synopsis_tfidf
+        synopsis_tfidf = torch.tensor(movies_df['synopsis_tfidf'].tolist(), dtype=torch.float)
+
+        # Dự đoán điểm số với mô hình
         with torch.no_grad():
             output = model(
                 torch.tensor([user_id] * num_movies, dtype=torch.long),
@@ -202,13 +233,34 @@ async def recommend(data: dict):
                 synopsis_tfidf
             )
 
-        top_indices = torch.topk(output, 5).indices
-        top_movie_ids = movie_ids[top_indices].tolist()
+        # Xử lý gợi ý
+        if movie_id is not None:
+            # Trường hợp có movie_id: kết hợp điểm từ mô hình và độ tương đồng với movie_id
+            if movie_id not in movies_df['movieId'].values:
+                logger.warning(f"Movie ID {movie_id} not found in movies.csv")
+                raise HTTPException(status_code=404, detail=f"Movie ID {movie_id} not found")
+
+            movie_idx = movies_df.index[movies_df['movieId'] == movie_id][0]
+            similarity_scores = similarity_matrix[movie_idx]
+            combined_scores = output.numpy() * 0.7 + similarity_scores * 0.3  # Kết hợp 70% từ mô hình, 30% từ tương đồng
+
+            # Loại bỏ movie_id đã chọn khỏi danh sách gợi ý
+            mask = movie_ids.numpy() != movie_id
+            filtered_movie_ids = movie_ids[mask]
+            filtered_scores = combined_scores[mask]
+
+            # Lấy top 5 phim gợi ý
+            top_indices = np.argsort(filtered_scores)[::-1][:5]
+            top_movie_ids = filtered_movie_ids[top_indices].tolist()
+        else:
+            # Trường hợp chỉ có user_id: gợi ý dựa trên điểm từ mô hình
+            top_indices = torch.topk(output, 5).indices
+            top_movie_ids = movie_ids[top_indices].tolist()
 
         return top_movie_ids
     except Exception as e:
         logger.error(f"Error in recommend endpoint: {e}")
-        raise
+        raise HTTPException(status_code=500, detail=f"Error in recommend endpoint: {str(e)}")
 
 @app.get("/health")
 async def health_check():
