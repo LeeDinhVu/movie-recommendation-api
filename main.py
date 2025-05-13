@@ -73,7 +73,7 @@ class TransformerRecommender(nn.Module):
 # Tiền xử lý dữ liệu
 try:
     # Đọc file CSV với phân tách là dấu |
-    movies_df = pd.read_csv("movies.csv", sep=',', names=['movieId', 'title', 'release_year', 'country', 'genres', 'director', 'main_actors', 'synopsis'], skiprows=1)
+    movies_df = pd.read_csv("movies.csv", sep=',', names=['movieId', 'title', 'release_year', 'genres', 'synopsis', 'director', 'main_actors', 'country'], skiprows=1)
     users_df = pd.read_csv("users.csv", sep=',', names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
 
     # Xử lý giá trị khuyết
@@ -82,7 +82,7 @@ try:
 
     # Mã hóa các cột dạng categorical
     label_encoders = {}
-    movies_df['genres'] = movies_df['genres'].str.split(',')  # Dùng dấu ; để tách genres
+    movies_df['genres'] = movies_df['genres'].str.split(',')  # Phân tách genres bằng dấu , (khớp với huấn luyện)
     all_genres = set(g for genres in movies_df['genres'] for g in genres)
     genre_encoder = LabelEncoder()
     genre_encoder.fit(list(all_genres))
@@ -104,7 +104,7 @@ try:
     movies_df['director'] = director_encoder.fit_transform(movies_df['director'])
     label_encoders['director'] = director_encoder
 
-    movies_df['main_actors'] = movies_df['main_actors'].str.split(',')
+    movies_df['main_actors'] = movies_df['main_actors'].str.split(',')  # Phân tách main_actors bằng dấu ,
     all_actors = set(a for actors in movies_df['main_actors'] for a in actors)
     actor_encoder = LabelEncoder()
     actor_encoder.fit(list(all_actors))
@@ -164,7 +164,7 @@ try:
     )
 
     # Tải trọng số mô hình
-    model.load_state_dict(torch.load("transformer_recommender_stable (1).pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("transformer_recommender_stable.pth", map_location=torch.device('cpu')))
     model.eval()
 except Exception as e:
     logger.error(f"Error loading model or data: {e}")
