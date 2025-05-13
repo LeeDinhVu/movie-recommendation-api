@@ -14,7 +14,7 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Định nghĩa lớp mô hình
+# Định nghĩa lớp mô hình (giữ nguyên như code huấn luyện)
 class TransformerRecommender(nn.Module):
     def __init__(self, num_users, num_movies, num_genres, num_countries, num_genders, num_occupations,
                  num_directors, num_actors, tfidf_dim, embed_dim=64, num_heads=4, num_layers=2):
@@ -61,7 +61,7 @@ class TransformerRecommender(nn.Module):
 
         combined = user_emb + movie_emb + gender_emb + occupation_emb + country_emb + director_emb + \
                    age_emb + release_year_emb + synopsis_emb + genre_emb + actor_emb
-        combined = combined.unsqueeze(0)
+        combined = combined.unsqueeze(0)  # Thêm chiều seq_len=1
 
         transformer_out = self.transformer(combined)
         transformer_out = transformer_out.squeeze(0)
@@ -124,11 +124,13 @@ try:
     def get_movie_features(row):
         genre_ids = label_encoders['genres'].transform([g for g in row['genres'] if g in label_encoders['genres'].classes_])
         actor_ids = label_encoders['main_actors'].transform([a for a in row['main_actors'] if a in label_encoders['main_actors'].classes_])
+        genre_ids = genre_ids[:3]  # Cắt ngắn để khớp với huấn luyện
+        actor_ids = actor_ids[:3]
         return np.concatenate([
-            np.pad(genre_ids[:3], (0, 3 - min(len(genre_ids), 3)), 'constant'),
+            np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant'),  # Padding để đủ 3
             [row['country']],
             [row['director']],
-            np.pad(actor_ids[:3], (0, 3 - min(len(actor_ids), 3)), 'constant')
+            np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')  # Padding để đủ 3
         ])
 
     movie_features = np.array([get_movie_features(row) for _, row in movies_df.iterrows()])
@@ -162,7 +164,7 @@ try:
     )
 
     # Tải trọng số mô hình
-    model.load_state_dict(torch.load("transformer_recommender_stable (1).pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("transformer_recommender_stable.pth", map_location=torch.device('cpu')))
     model.eval()
 except Exception as e:
     logger.error(f"Error loading model or data: {e}")
@@ -197,7 +199,7 @@ async def recommend(data: dict):
         country = torch.tensor(movies_df['country'].values, dtype=torch.long)
         director = torch.tensor(movies_df['director'].values, dtype=torch.long)
 
-        # Xử lý genres và main_actors
+        # Xử lý genres và main_actors (khớp với huấn luyện)
         max_genres = 3
         max_actors = 3
         genres_padded = np.zeros((num_movies, max_genres), dtype=np.int64)
@@ -208,10 +210,10 @@ async def recommend(data: dict):
             actors = movies_df['main_actors'].iloc[i]
             genre_ids = label_encoders['genres'].transform([g for g in genres if g in label_encoders['genres'].classes_])
             actor_ids = label_encoders['main_actors'].transform([a for a in actors if a in label_encoders['main_actors'].classes_])
-            genres_ids=genres_ids[:max_genres]
-            actor_ids=actor_ids[:max_actors]
-            genres_padded[i] = np.pad(genre_ids, (0, max_genres - len(genre_ids)), 'constant')[:max_genres]
-            actors_padded[i] = np.pad(actor_ids, (0, max_actors - len(actor_ids)), 'constant')[:max_actors]
+            genre_ids = genre_ids[:max_genres]  # Cắt ngắn để khớp với huấn luyện
+            actor_ids = actor_ids[:max_actors]
+            genres_padded[i] = np.pad(genre_ids, (0, max_genres - len(genre_ids)), 'constant')
+            actors_padded[i] = np.pad(actor_ids, (0, max_actors - len(actor_ids)), 'constant')
 
         genres_tensor = torch.tensor(genres_padded, dtype=torch.long)
         main_actors_tensor = torch.tensor(actors_padded, dtype=torch.long)
