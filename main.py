@@ -73,8 +73,8 @@ class TransformerRecommender(nn.Module):
 # Tiền xử lý dữ liệu
 try:
     # Đọc file CSV với phân tách là dấu |
-    movies_df = pd.read_csv("movies.csv", sep='', names=['movieId', 'title', 'release_year', 'country', 'genres', 'director', 'main_actors', 'synopsis'], skiprows=1)
-    users_df = pd.read_csv("users.csv", sep='', names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
+    movies_df = pd.read_csv("movies.csv", sep=',', names=['movieId', 'title', 'release_year', 'country', 'genres', 'director', 'main_actors', 'synopsis'], skiprows=1)
+    users_df = pd.read_csv("users.csv", sep=',', names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
 
     # Xử lý giá trị khuyết
     movies_df[['genres', 'country', 'director', 'main_actors', 'synopsis']] = movies_df[['genres', 'country', 'director', 'main_actors', 'synopsis']].fillna('Unknown')
@@ -162,7 +162,7 @@ try:
     )
 
     # Tải trọng số mô hình
-    model.load_state_dict(torch.load("transformer_recommender_stable.pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("transformer_recommender_stable (1).pth", map_location=torch.device('cpu')))
     model.eval()
 except Exception as e:
     logger.error(f"Error loading model or data: {e}")
