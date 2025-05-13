@@ -164,7 +164,7 @@ try:
     )
 
     # Tải trọng số mô hình
-    model.load_state_dict(torch.load("transformer_recommender_stable.pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("transformer_recommender_stable (1).pth", map_location=torch.device('cpu')))
     model.eval()
 except Exception as e:
     logger.error(f"Error loading model or data: {e}")
