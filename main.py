@@ -125,10 +125,10 @@ try:
         genre_ids = label_encoders['genres'].transform([g for g in row['genres'] if g in label_encoders['genres'].classes_])
         actor_ids = label_encoders['main_actors'].transform([a for a in row['main_actors'] if a in label_encoders['main_actors'].classes_])
         return np.concatenate([
-            np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant')[:3],
+            np.pad(genre_ids[:3], (0, 3 - min(len(genre_ids), 3)), 'constant'),
             [row['country']],
             [row['director']],
-            np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')[:3]
+            np.pad(actor_ids[:3], (0, 3 - min(len(actor_ids), 3)), 'constant')
         ])
 
     movie_features = np.array([get_movie_features(row) for _, row in movies_df.iterrows()])
@@ -208,6 +208,8 @@ async def recommend(data: dict):
             actors = movies_df['main_actors'].iloc[i]
             genre_ids = label_encoders['genres'].transform([g for g in genres if g in label_encoders['genres'].classes_])
             actor_ids = label_encoders['main_actors'].transform([a for a in actors if a in label_encoders['main_actors'].classes_])
+            genres_ids=genres_ids[:max_genres]
+            actor_ids=actor_ids[:max_actors]
             genres_padded[i] = np.pad(genre_ids, (0, max_genres - len(genre_ids)), 'constant')[:max_genres]
             actors_padded[i] = np.pad(actor_ids, (0, max_actors - len(actor_ids)), 'constant')[:max_actors]
 
