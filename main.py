@@ -14,7 +14,7 @@ app = FastAPI()
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Định nghĩa lớp mô hình (giữ nguyên như code huấn luyện)
+# Định nghĩa lớp mô hình
 class TransformerRecommender(nn.Module):
     def __init__(self, num_users, num_movies, num_genres, num_countries, num_genders, num_occupations,
                  num_directors, num_actors, tfidf_dim, embed_dim=64, num_heads=4, num_layers=2):
@@ -82,7 +82,7 @@ try:
 
     # Mã hóa các cột dạng categorical
     label_encoders = {}
-    movies_df['genres'] = movies_df['genres'].str.split(',')  # Phân tách genres bằng dấu , (khớp với huấn luyện)
+    movies_df['genres'] = movies_df['genres'].str.split(',')
     all_genres = set(g for genres in movies_df['genres'] for g in genres)
     genre_encoder = LabelEncoder()
     genre_encoder.fit(list(all_genres))
@@ -104,7 +104,7 @@ try:
     movies_df['director'] = director_encoder.fit_transform(movies_df['director'])
     label_encoders['director'] = director_encoder
 
-    movies_df['main_actors'] = movies_df['main_actors'].str.split(',')  # Phân tách main_actors bằng dấu ,
+    movies_df['main_actors'] = movies_df['main_actors'].str.split(',')
     all_actors = set(a for actors in movies_df['main_actors'] for a in actors)
     actor_encoder = LabelEncoder()
     actor_encoder.fit(list(all_actors))
@@ -124,13 +124,13 @@ try:
     def get_movie_features(row):
         genre_ids = label_encoders['genres'].transform([g for g in row['genres'] if g in label_encoders['genres'].classes_])
         actor_ids = label_encoders['main_actors'].transform([a for a in row['main_actors'] if a in label_encoders['main_actors'].classes_])
-        genre_ids = genre_ids[:3]  # Cắt ngắn để khớp với huấn luyện
+        genre_ids = genre_ids[:3]
         actor_ids = actor_ids[:3]
         return np.concatenate([
-            np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant'),  # Padding để đủ 3
+            np.pad(genre_ids, (0, 3 - len(genre_ids)), 'constant'),
             [row['country']],
             [row['director']],
-            np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')  # Padding để đủ 3
+            np.pad(actor_ids, (0, 3 - len(actor_ids)), 'constant')
         ])
 
     movie_features = np.array([get_movie_features(row) for _, row in movies_df.iterrows()])
@@ -199,7 +199,7 @@ async def recommend(data: dict):
         country = torch.tensor(movies_df['country'].values, dtype=torch.long)
         director = torch.tensor(movies_df['director'].values, dtype=torch.long)
 
-        # Xử lý genres và main_actors (khớp với huấn luyện)
+        # Xử lý genres và main_actors
         max_genres = 3
         max_actors = 3
         genres_padded = np.zeros((num_movies, max_genres), dtype=np.int64)
@@ -210,7 +210,7 @@ async def recommend(data: dict):
             actors = movies_df['main_actors'].iloc[i]
             genre_ids = label_encoders['genres'].transform([g for g in genres if g in label_encoders['genres'].classes_])
             actor_ids = label_encoders['main_actors'].transform([a for a in actors if a in label_encoders['main_actors'].classes_])
-            genre_ids = genre_ids[:max_genres]  # Cắt ngắn để khớp với huấn luyện
+            genre_ids = genre_ids[:max_genres]
             actor_ids = actor_ids[:max_actors]
             genres_padded[i] = np.pad(genre_ids, (0, max_genres - len(genre_ids)), 'constant')
             actors_padded[i] = np.pad(actor_ids, (0, max_actors - len(actor_ids)), 'constant')
@@ -248,10 +248,14 @@ async def recommend(data: dict):
             similarity_scores = similarity_matrix[movie_idx]
             combined_scores = output.numpy() * 0.7 + similarity_scores * 0.3  # Kết hợp 70% từ mô hình, 30% từ tương đồng
 
+            # Sao chép mảng để tránh stride âm
+            filtered_movie_ids = movie_ids.numpy().copy()
+            filtered_scores = combined_scores.copy()
+
             # Loại bỏ movie_id đã chọn khỏi danh sách gợi ý
-            mask = movie_ids.numpy() != movie_id
-            filtered_movie_ids = movie_ids[mask]
-            filtered_scores = combined_scores[mask]
+            mask = filtered_movie_ids != movie_id
+            filtered_movie_ids = filtered_movie_ids[mask]
+            filtered_scores = filtered_scores[mask]
 
             # Lấy top 5 phim gợi ý
             top_indices = np.argsort(filtered_scores)[::-1][:5]
