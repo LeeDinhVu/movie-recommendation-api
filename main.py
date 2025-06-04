@@ -72,7 +72,7 @@ class TransformerRecommender(nn.Module):
 
 # Tiền xử lý dữ liệu
 try:
-    # Đọc file CSV với phân tách là dấu |
+    # Đọc file CSV với phân tách là dấu ,
     movies_df = pd.read_csv("movies.csv", sep=',', names=['movieId', 'title', 'release_year', 'genres', 'synopsis', 'director', 'main_actors', 'country'], skiprows=1)
     users_df = pd.read_csv("users.csv", sep=',', names=['userId', 'age', 'gender', 'occupation'], skiprows=1)
 
@@ -164,7 +164,7 @@ try:
     )
 
     # Tải trọng số mô hình
-    model.load_state_dict(torch.load("transformer_recommender_stable (1).pth", map_location=torch.device('cpu')))
+    model.load_state_dict(torch.load("transformer_model.pth", map_location=torch.device('cpu')))
     model.eval()
 except Exception as e:
     logger.error(f"Error loading model or data: {e}")
