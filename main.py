@@ -111,10 +111,10 @@ try:
     
     # Initialize model
     num_users = data['userId_mapped'].nunique()
-    num_movies = data['movieId_mapped'].values()
-    num_occupations = data['occupation_encoded'].values()
+    num_movies = data['movieId_mapped'].nunique()
+    num_occupations = data['occupation_encoded'].nunique()
     num_directors = data['director_encoded'].nunique()
-    num_actors = data['top_actor_encoded'].values()
+    num_actors = data['top_actor_encoded'].nunique()
     genre_dim = genres.shape[1]
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
