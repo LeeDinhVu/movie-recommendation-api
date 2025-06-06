@@ -5,7 +5,7 @@ import pandas as pd
 from fastapi import FastAPI, HTTPException
 import logging
 import pickle
-from sklearn.preprocessing import LabelEncoder
+from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn.metrics.pairwise import cosine_similarity
 import csv
 
@@ -69,53 +69,78 @@ class TransformerRecommender(nn.Module):
         output = self.final_fc(final_input)
         return output.squeeze()
 
-# Load processed data and model
+# Load data and model
 try:
-    # Load data with robust CSV parsing
-    data = pd.read_csv(
-        "processed_data/processed_data.csv",
-        quoting=csv.QUOTE_MINIMAL,
-        delimiter=',',
-        encoding='utf-8',
-        on_bad_lines='skip'
+    # Load users.csv
+    users_df = pd.read_csv(
+        "users.csv",
+        sep=',',
+        names=['userId', 'age', 'occupation'],
+        skiprows=1
     )
-    genres = pd.read_csv(
-        "processed_data/genres.csv",
-        index_col=0,
-        quoting=csv.QUOTE_MINIMAL,
-        delimiter=',',
-        encoding='utf-8'
+    users_df['occupation'] = users_df['occupation'].fillna('Unknown')
+    
+    # Load movies.csv
+    movies_df = pd.read_csv(
+        "movies.csv",
+        sep=',',
+        names=['movieId', 'title', 'release_year', 'genres', 'synopsis', 'director', 'main_actors', 'country'],
+        skiprows=1
     )
+    movies_df[['genres', 'director', 'main_actors', 'country', 'synopsis']] = movies_df[['genres', 'director', 'main_actors', 'country', 'synopsis']].fillna('Unknown')
+    
+    # Load synopsis embeddings
     synopsis_embeddings = np.load("processed_data/synopsis_embeddings.npy")
     
+    # Encode categorical columns
+    le_user = LabelEncoder()
+    le_movie = LabelEncoder()
+    le_occupation = LabelEncoder()
+    le_director = LabelEncoder()
+    le_actor = LabelEncoder()
+    
+    users_df['userId_mapped'] = le_user.fit_transform(users_df['userId'])
+    movies_df['movieId_mapped'] = le_movie.fit_transform(movies_df['movieId'])
+    users_df['occupation_encoded'] = le_occupation.fit_transform(users_df['occupation'])
+    movies_df['director_encoded'] = le_director.fit_transform(movies_df['director'])
+    movies_df['main_actors'] = movies_df['main_actors'].str.split(',')
+    movies_df['top_actor'] = movies_df['main_actors'].apply(lambda x: x[0] if x else 'Unknown')
+    movies_df['top_actor_encoded'] = le_actor.fit_transform(movies_df['top_actor'])
+    
+    # Scale numerical columns
+    scaler = MinMaxScaler()
+    users_df['age_scaled'] = scaler.fit_transform(users_df[['age']].astype(float))
+    movies_df['release_year_scaled'] = scaler.fit_transform(movies_df[['release_year']].astype(float))
+    
+    # Create genre features
+    genres_split = movies_df['genres'].str.get_dummies(',')
+    genres_df = pd.DataFrame(genres_split, index=movies_df.index)
+    
     # Log data shapes
-    logger.info(f"Loaded data.csv with shape: {data.shape}")
-    logger.info(f"Loaded genres.csv with shape: {genres.shape}")
+    logger.info(f"Loaded users.csv with shape: {users_df.shape}")
+    logger.info(f"Loaded movies.csv with shape: {movies_df.shape}")
+    logger.info(f"Generated genres with shape: {genres_df.shape}")
     logger.info(f"Loaded synopsis_embeddings with shape: {synopsis_embeddings.shape}")
     
-    # Load encoders
-    with open("processed_data/le_user.pkl", "rb") as f:
-        le_user = pickle.load(f)
-    with open("processed_data/le_movie.pkl", "rb") as f:
-        le_movie = pickle.load(f)
-    with open("processed_data/le_occupation.pkl", "rb") as f:
-        le_occupation = pickle.load(f)
-    with open("processed_data/le_director.pkl", "rb") as f:
-        le_director = pickle.load(f)
-    with open("processed_data/le_actor.pkl", "rb") as f:
-        le_actor = pickle.load(f)
-    
-    # Log encoder classes
-    logger.info(f"le_user classes: {len(le_user.classes_)} users")
-    logger.info(f"le_movie classes: {len(le_movie.classes_)} movies")
+    # Save encoders
+    with open("processed_data/le_user.pkl", "wb") as f:
+        pickle.dump(le_user, f)
+    with open("processed_data/le_movie.pkl", "wb") as f:
+        pickle.dump(le_movie, f)
+    with open("processed_data/le_occupation.pkl", "wb") as f:
+        pickle.dump(le_occupation, f)
+    with open("processed_data/le_director.pkl", "wb") as f:
+        pickle.dump(le_director, f)
+    with open("processed_data/le_actor.pkl", "wb") as f:
+        pickle.dump(le_actor, f)
     
     # Initialize model
-    num_users = data['userId_mapped'].nunique()
-    num_movies = data['movieId_mapped'].nunique()
-    num_occupations = data['occupation_encoded'].nunique()
-    num_directors = data['director_encoded'].nunique()
-    num_actors = data['top_actor_encoded'].nunique()
-    genre_dim = genres.shape[1]
+    num_users = users_df['userId_mapped'].nunique()
+    num_movies = movies_df['movieId_mapped'].nunique()
+    num_occupations = users_df['occupation_encoded'].nunique()
+    num_directors = movies_df['director_encoded'].nunique()
+    num_actors = movies_df['top_actor_encoded'].nunique()
+    genre_dim = genres_df.shape[1]
     
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model = TransformerRecommender(
@@ -127,9 +152,9 @@ try:
         genre_dim,
         dropout=0.1
     )
-    model.to(device=device)
+    model.to(device)
     
-    # Load checkpoint with fallback
+    # Load checkpoint
     checkpoint_path = "updated_checkpoint/best_checkpoint.pth"
     checkpoint = torch.load(checkpoint_path, map_location=device)
     try:
@@ -141,7 +166,7 @@ try:
     # Create similarity matrix
     def get_movie_features(row):
         try:
-            genre_vec = genres.loc[row.name].values
+            genre_vec = genres_df.loc[row.name].values
             return np.concatenate([
                 genre_vec,
                 [row['director_encoded']],
@@ -151,27 +176,23 @@ try:
         except Exception as e:
             logger.error(f"Error in get_movie_features for row index {row.name}: {str(e)}")
             raise
-
-    movie_features = np.array([get_movie_features(row) for _, row in data.drop_duplicates('movieId_mapped').iterrows()])
+    
+    movie_features = np.array([get_movie_features(row) for _, row in movies_df.iterrows()])
     similarity_matrix = cosine_similarity(movie_features)
 except Exception as e:
-    logger.error(f"Failed to load model or files: {str(e)}")
-    raise ValueError(f"Failed to load model or files: {str(e)}")
+    logger.error(f"Failed to load data or model: {str(e)}")
+    raise ValueError(f"Failed to load data or model: {str(e)}")
 
 def generate_user_recommendations(user_id, top_k=5):
     try:
         logger.info(f"Generating recommendations for user_id={user_id}, top_k={top_k}")
         
-        # Validate user_id
         if user_id not in le_user.classes_:
             logger.warning(f"User ID {user_id} not found in le_user.classes_")
             raise ValueError(f"User ID {user_id} not found")
         
-        # Map user_id
         user_id_mapped = le_user.transform(np.array([user_id]))[0]
-        
-        # Get user data
-        user_data = data[data['userId'] == user_id]
+        user_data = users_df[users_df['userId'] == user_id]
         if user_data.empty:
             logger.error(f"No data found for user_id={user_id}")
             raise ValueError(f"No data found for user_id={user_id}")
@@ -179,25 +200,16 @@ def generate_user_recommendations(user_id, top_k=5):
         age_scaled = user_data['age_scaled']
         occupation_encoded = user_data['occupation_encoded']
         
-        # Prepare input tensors
-        unique_movie_data = data[['movieId_mapped', 'release_year_scaled', 'director_encoded', 'top_actor_encoded']].drop_duplicates('movieId_mapped')
+        unique_movie_data = movies_df[['movieId_mapped', 'release_year_scaled', 'director_encoded', 'top_actor_encoded']]
         unique_movie_ids = unique_movie_data['movieId_mapped'].values
         num_movies = len(unique_movie_ids)
         
-        # Get genres and synopsis
-        unique_indices = []
-        for mid in unique_movie_ids:
-            movie_rows = data[data['movieId_mapped'] == mid]
-            if not movie_rows.empty:
-                unique_indices.append(movie_rows.index[0])
-            else:
-                logger.warning(f"No data found for movieId_mapped={mid}")
-                continue
+        unique_indices = movies_df.index[movies_df['movieId_mapped'].isin(unique_movie_ids)].tolist()
         if not unique_indices:
             logger.error("No valid movie indices found")
             raise ValueError("No valid movie indices found")
         
-        genres_tensor = torch.tensor(genres.loc[unique_indices].values, dtype=torch.float, device=device)
+        genres_tensor = torch.tensor(genres_df.loc[unique_indices].values, dtype=torch.float, device=device)
         synopsis_tensor = torch.tensor(synopsis_embeddings[unique_indices], dtype=torch.float, device=device)
         
         inputs = {
@@ -207,21 +219,17 @@ def generate_user_recommendations(user_id, top_k=5):
             'occupation': torch.tensor([occupation_encoded] * num_movies, dtype=torch.long, device=device),
             'release_year': torch.tensor(unique_movie_data['release_year_scaled'].values, dtype=torch.float, device=device),
             'director': torch.tensor(unique_movie_data['director_encoded'].values, dtype=torch.long, device=device),
-            'top_actor': torch.tensor(unique_movie_data['top_actor_encoded'].values, dtype=torch.long, device=device),
+            'top_actor': torch.tensor(unique_movie_data['top_actor_encoded].values, dtype=torch.long, device=device),
             'genres': genres_tensor,
             'synopsis': synopsis_tensor
         }
         
-        # Generate predictions
         with torch.no_grad():
             predictions = model(**inputs)
         predictions = predictions.cpu().numpy() * 4 + 1
         
-        # Get top-k movies
         top_indices = np.argsort(predictions)[-top_k:][::-1]
         top_movie_ids_mapped = unique_movie_ids[top_indices]
-        
-        # Map back to original movie IDs
         top_movie_ids = le_movie.inverse_transform(top_movie_ids_mapped)
         
         logger.info(f"Generated {len(top_movie_ids)} recommendations for user_id={user_id}")
@@ -234,7 +242,6 @@ def generate_recommendations(user_id, movie_id, top_k=5):
     try:
         logger.info(f"Generating recommendations for user_id={user_id}, movie_id={movie_id}, top_k={top_k}")
         
-        # Validate user_id and movie_id
         if user_id not in le_user.classes_:
             logger.warning(f"User ID {user_id} not found in le_user.classes_")
             raise ValueError(f"User ID {user_id} not found")
@@ -242,12 +249,10 @@ def generate_recommendations(user_id, movie_id, top_k=5):
             logger.warning(f"Movie ID {movie_id} not found in le_movie.classes_")
             raise ValueError(f"Movie ID {movie_id} not found")
         
-        # Map user_id and movie_id
         user_id_mapped = le_user.transform(np.array([user_id]))[0]
         movie_id_mapped = le_movie.transform(np.array([movie_id]))[0]
         
-        # Get user data
-        user_data = data[data['userId'] == user_id]
+        user_data = users_df[users_df['userId'] == user_id]
         if user_data.empty:
             logger.error(f"No data found for user_id={user_id}")
             raise ValueError(f"No data found for user_id={user_id}")
@@ -255,25 +260,16 @@ def generate_recommendations(user_id, movie_id, top_k=5):
         age_scaled = user_data['age_scaled']
         occupation_encoded = user_data['occupation_encoded']
         
-        # Prepare input tensors
-        unique_movie_data = data[['movieId_mapped', 'release_year_scaled', 'director_encoded', 'top_actor_encoded']].drop_duplicates('movieId_mapped')
+        unique_movie_data = movies_df[['movieId_mapped', 'release_year_scaled', 'director_encoded', 'top_actor_encoded']]
         unique_movie_ids = unique_movie_data['movieId_mapped'].values
         num_movies = len(unique_movie_ids)
         
-        # Get genres and synopsis
-        unique_indices = []
-        for mid in unique_movie_ids:
-            movie_rows = data[data['movieId_mapped'] == mid]
-            if not movie_rows.empty:
-                unique_indices.append(movie_rows.index[0])
-            else:
-                logger.warning(f"No data found for movieId_mapped={mid}")
-                continue
+        unique_indices = movies_df.index[movies_df['movieId_mapped'].isin(unique_movie_ids)].tolist()
         if not unique_indices:
             logger.error("No valid movie indices found")
             raise ValueError("No valid movie indices found")
         
-        genres_tensor = torch.tensor(genres.loc[unique_indices].values, dtype=torch.float, device=device)
+        genres_tensor = torch.tensor(genres_df.loc[unique_indices].values, dtype=torch.float, device=device)
         synopsis_tensor = torch.tensor(synopsis_embeddings[unique_indices], dtype=torch.float, device=device)
         
         inputs = {
@@ -288,31 +284,25 @@ def generate_recommendations(user_id, movie_id, top_k=5):
             'synopsis': synopsis_tensor
         }
         
-        # Generate predictions
         with torch.no_grad():
             predictions = model(**inputs)
         predictions = predictions.cpu().numpy() * 4 + 1
         
-        # Get similarity scores
-        movie_rows = data[data['movieId_mapped'] == movie_id_mapped]
+        movie_rows = movies_df[movies_df['movieId_mapped'] == movie_id_mapped]
         if movie_rows.empty:
             logger.error(f"No data found for movieId_mapped={movie_id_mapped}")
             raise ValueError(f"No data found for movieId_mapped={movie_id_mapped}")
         movie_idx = movie_rows.index[0]
         similarity_scores = similarity_matrix[movie_idx]
         
-        # Filter out input movie
         mask = unique_movie_ids != movie_id_mapped
         filtered_movie_ids = unique_movie_ids[mask]
         filtered_predictions = predictions[mask]
         filtered_similarity = similarity_scores[mask]
         
-        # Combine scores
         combined_scores = filtered_predictions * 0.7 + filtered_similarity * 0.3
         top_indices = np.argsort(combined_scores)[-top_k:][::-1]
         top_movie_ids_mapped = filtered_movie_ids[top_indices]
-        
-        # Map back to original movie IDs
         top_movie_ids = le_movie.inverse_transform(top_movie_ids_mapped)
         
         logger.info(f"Generated {len(top_movie_ids)} recommendations for user_id={user_id}, movie_id={movie_id}")
