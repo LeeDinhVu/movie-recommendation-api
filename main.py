@@ -286,4 +286,8 @@ async def recommend(request: dict):
         else:
             # Validate movie_id and generate recommendations based on user_id and movie_id
             if movie_id not in le_movie.classes_:
-                raise HTTPException(status_code=404, detail=f"Movie ID
+                raise HTTPException(status_code=500, detail=f"Error in recommend endpoint: {str(e)}")
+
+@app.get("/health")
+async def health_check():
+    return {"status": "healthy"}
