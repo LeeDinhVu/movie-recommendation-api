@@ -7,12 +7,33 @@ import logging
 import pickle
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
+import urllib.request
+import os
 
 app = FastAPI()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Download files from Google Drive
+def download_file(url, local_path):
+    os.makedirs(os.path.dirname(local_path), exist_ok=True)
+    if not os.path.exists(local_path):
+        logger.info(f"Downloading {local_path} from {url}")
+        urllib.request.urlretrieve(url, local_path)
+    else:
+        logger.info(f"File {local_path} already exists")
+
+# File URLs from Google Drive (replace FILE_ID with actual IDs)
+file_urls = {
+    "processed_data/processed_data.csv": "https://drive.google.com/file/d/1Ed9VOzoQ5Qrmxzi0hqYNrEsd66OLVMVM/view?usp=sharing",
+    "processed_data/synopsis_embeddings.npy": "https://drive.google.com/file/d/1Q_YsbDrZ-hNSfhWOlvvBWnsAxXQiiEJZ/view?usp=sharing"
+}
+
+# Download all required files
+for local_path, url in file_urls.items():
+    download_file(url, local_path)
 
 # Define Transformer Model
 class TransformerRecommender(nn.Module):
@@ -30,7 +51,7 @@ class TransformerRecommender(nn.Module):
         self.synopsis_fc = nn.Linear(64, 32)
         
         self.user_combine = nn.Linear(embed_dim + 16 + 16, 64)
-        self.movie_combine = nn.Linear(embed_dim + 16 + 16 + 16 + 32 + 32, 64)  # 144
+        self.movie_combine = nn.Linear(embed_dim + 16 + 16 + 16 + 32 + 32, 64)
         
         self.transformer = nn.TransformerEncoder(
             nn.TransformerEncoderLayer(d_model=64, nhead=4, dim_feedforward=128, batch_first=True, dropout=dropout),
@@ -58,15 +79,10 @@ class TransformerRecommender(nn.Module):
         actor_vec = self.actor_embed(top_actor)
         genre_vec = self.genre_fc(genres)
         synopsis_vec = self.synopsis_fc(synopsis)
-        movie_combined = torch.cat([movie_vec, year_vec, director_vec, actor_vec, genre_vec, synopsis_vec], dim=1)
+        movie_combined = torch.cat([movie_vec, year_vec, director_vec, actor_vec, genre_vec, synopsis_vec], dim=0)  # Sửa lỗi: dim=0
         movie_vector = self.movie_combine(movie_combined)
         
-        interaction = torch.stack([user_vector, movie_vector], dim=1)
-        transformer_out = self.transformer(interaction).mean(dim=1)
-        
-        final_input = torch.cat([user_vector, movie_vector], dim=1)
-        output = self.final_fc(final_input)
-        return output.squeeze()
+        return torch.cat([user_vector, movie_vector], dim=0)  # Trả về tensor kết hợp
 
 # Load processed data and encoders
 try:
