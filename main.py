@@ -219,7 +219,7 @@ def generate_user_recommendations(user_id, top_k=5):
             'occupation': torch.tensor([occupation_encoded] * num_movies, dtype=torch.long, device=device),
             'release_year': torch.tensor(unique_movie_data['release_year_scaled'].values, dtype=torch.float, device=device),
             'director': torch.tensor(unique_movie_data['director_encoded'].values, dtype=torch.long, device=device),
-            'top_actor': torch.tensor(unique_movie_data['top_actor_encoded].values, dtype=torch.long, device=device),
+            'top_actor': torch.tensor(unique_movie_data['top_actor_encoded'].values, dtype=torch.long, device=device),
             'genres': genres_tensor,
             'synopsis': synopsis_tensor
         }
