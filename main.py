@@ -130,7 +130,7 @@ try:
     model.to(device=device)
     
     # Load checkpoint with fallback
-    checkpoint_path = "processed_data/best_checkpoint.pth"
+    checkpoint_path = "updated_checkpoint/best_checkpoint.pth"
     checkpoint = torch.load(checkpoint_path, map_location=device)
     try:
         model.load_state_dict(checkpoint['model_state_dict'])
