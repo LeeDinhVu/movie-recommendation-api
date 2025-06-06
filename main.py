@@ -7,33 +7,12 @@ import logging
 import pickle
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import cosine_similarity
-import urllib.request
-import os
 
 app = FastAPI()
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
-
-# Download files from Google Drive
-def download_file(url, local_path):
-    os.makedirs(os.path.dirname(local_path), exist_ok=True)
-    if not os.path.exists(local_path):
-        logger.info(f"Downloading {local_path} from {url}")
-        urllib.request.urlretrieve(url, local_path)
-    else:
-        logger.info(f"File {local_path} already exists")
-
-# File URLs from Google Drive (replace FILE_ID with actual IDs)
-file_urls = {
-    "processed_data/processed_data.csv": "https://drive.google.com/file/d/1Ed9VOzoQ5Qrmxzi0hqYNrEsd66OLVMVM/view?usp=sharing",
-    "processed_data/synopsis_embeddings.npy": "https://drive.google.com/file/d/1Q_YsbDrZ-hNSfhWOlvvBWnsAxXQiiEJZ/view?usp=sharing"
-}
-
-# Download all required files
-for local_path, url in file_urls.items():
-    download_file(url, local_path)
 
 # Define Transformer Model
 class TransformerRecommender(nn.Module):
@@ -79,10 +58,15 @@ class TransformerRecommender(nn.Module):
         actor_vec = self.actor_embed(top_actor)
         genre_vec = self.genre_fc(genres)
         synopsis_vec = self.synopsis_fc(synopsis)
-        movie_combined = torch.cat([movie_vec, year_vec, director_vec, actor_vec, genre_vec, synopsis_vec], dim=0)  # Sửa lỗi: dim=0
+        movie_combined = torch.cat([movie_vec, year_vec, director_vec, actor_vec, genre_vec, synopsis_vec], dim=1)
         movie_vector = self.movie_combine(movie_combined)
         
-        return torch.cat([user_vector, movie_vector], dim=0)  # Trả về tensor kết hợp
+        interaction = torch.stack([user_vector, movie_vector], dim=1)
+        transformer_out = self.transformer(interaction).mean(dim=1)
+        
+        final_input = torch.cat([user_vector, movie_vector], dim=1)
+        output = self.final_fc(final_input)
+        return output.squeeze()
 
 # Load processed data and encoders
 try:
@@ -136,6 +120,68 @@ try:
 except Exception as e:
     logger.error(f"Error loading model or data: {e}")
     raise
+
+def generate_user_recommendations(user_id, top_k=5):
+    try:
+        # Map user_id to mapped ID
+        user_id_mapped = le_user.transform([user_id])[0]
+        
+        # Get user data
+        user_data = data[data['userId'] == user_id].iloc[0]
+        age_scaled = user_data['age_scaled']
+        occupation_encoded = user_data['occupation_encoded']
+        
+        # Prepare input tensors for all unique movies
+        unique_movie_data = data[['movieId_mapped', 'release_year_scaled', 'director_encoded', 'top_actor_encoded']].drop_duplicates('movieId_mapped')
+        unique_movie_ids = unique_movie_data['movieId_mapped'].values
+        num_movies = len(unique_movie_ids)
+        
+        # Get genres and synopsis for unique movies
+        unique_indices = [data[data['movieId_mapped'] == mid].index[0] for mid in unique_movie_ids]
+        genres_tensor = torch.tensor(genres.loc[unique_indices].values, dtype=torch.float, device=device)
+        synopsis_tensor = torch.tensor(synopsis_embeddings[unique_indices], dtype=torch.float, device=device)
+        
+        inputs = {
+            'user_id': torch.tensor([user_id_mapped] * num_movies, dtype=torch.long, device=device),
+            'movie_id': torch.tensor(unique_movie_ids, dtype=torch.long, device=device),
+            'age': torch.tensor([age_scaled] * num_movies, dtype=torch.float, device=device),
+            'occupation': torch.tensor([occupation_encoded] * num_movies, dtype=torch.long, device=device),
+            'release_year': torch.tensor(unique_movie_data['release_year_scaled'].values, dtype=torch.float, device=device),
+            'director': torch.tensor(unique_movie_data['director_encoded'].values, dtype=torch.long, device=device),
+            'top_actor': torch.tensor(unique_movie_data['top_actor_encoded'].values, dtype=torch.long, device=device),
+            'genres': genres_tensor,
+            'synopsis': synopsis_tensor
+        }
+        
+        # Generate predictions
+        with torch.no_grad():
+            predictions = model(**inputs)
+        predictions = predictions.cpu().numpy() * 4 + 1  # Convert to [1, 5] scale
+        
+        # Get top-k movies
+        top_indices = np.argsort(predictions)[-top_k:][::-1]
+        top_movie_ids_mapped = unique_movie_ids[top_indices]
+        top_scores = predictions[top_indices]
+        
+        # Map back to original movie IDs and get details
+        top_movie_ids = le_movie.inverse_transform(top_movie_ids_mapped)
+        recommended_movies = data[data['movieId'].isin(top_movie_ids)][['movieId', 'title', 'director_encoded', 'top_actor_encoded']].drop_duplicates('movieId')
+        
+        # Add predicted scores
+        score_map = {mid: score for mid, score in zip(top_movie_ids_mapped, top_scores)}
+        recommended_movies['predicted_score'] = recommended_movies['movieId'].map(le_movie.transform).map(score_map)
+        
+        # Map director and actor back to names
+        recommended_movies['director'] = recommended_movies['director_encoded'].map(lambda x: le_director.inverse_transform([x])[0])
+        recommended_movies['top_actor'] = recommended_movies['top_actor_encoded'].map(lambda x: le_actor.inverse_transform([x])[0])
+        recommended_movies = recommended_movies[['movieId', 'title', 'director', 'top_actor', 'predicted_score']]
+        
+        return {
+            'recommendations': recommended_movies.to_dict('records')
+        }
+    except Exception as e:
+        logger.error(f"Error in generating user recommendations: {e}")
+        raise
 
 def generate_recommendations(user_id, movie_id, top_k=5):
     try:
@@ -230,20 +276,14 @@ async def recommend(request: dict):
         
         if user_id is None:
             raise HTTPException(status_code=400, detail="Missing user_id in request")
-        if movie_id is None:
-            raise HTTPException(status_code=400, detail="Missing movie_id in request")
         
         if user_id not in le_user.classes_:
             raise HTTPException(status_code=404, detail=f"User ID {user_id} not found")
-        if movie_id not in le_movie.classes_:
-            raise HTTPException(status_code=404, detail=f"Movie ID {movie_id} not found")
         
-        result = generate_recommendations(user_id, movie_id, top_k)
-        return result
-    except Exception as e:
-        logger.error(f"Error in recommend endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Error in recommend endpoint: {str(e)}")
-
-@app.get("/health")
-async def health_check():
-    return {"status": "healthy"}
+        if movie_id is None:
+            # Generate recommendations based on user_id only
+            result = generate_user_recommendations(user_id, top_k)
+        else:
+            # Validate movie_id and generate recommendations based on user_id and movie_id
+            if movie_id not in le_movie.classes_:
+                raise HTTPException(status_code=404, detail=f"Movie ID
