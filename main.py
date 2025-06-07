@@ -150,7 +150,7 @@ class TransformerRecommender(nn.Module):
         transformer_out = self.transformer(interaction).mean(dim=1)
 
         final_input = torch.cat([user_vector, movie_vector], dim=1)
-        output = self.final_estimator(final_input)
+        output = self.final_fc(final_input)
         return output.squeeze()
 
 # Initialize model
