@@ -36,7 +36,7 @@ try:
         le_user = pickle.load(f)
     with open('processed_data/le_movie.pkl', 'rb') as f:
         le_movie = pickle.load(f)
-    with open 'processed_data/le_director.pkl', 'rb') as f:
+    with open ('processed_data/le_director.pkl', 'rb') as f:
         le_director = pickle.load(f)
     with open('processed_data/le_actor.pkl', 'rb') as f:
         le_actor = pickle.load(f)
