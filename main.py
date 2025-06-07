@@ -36,7 +36,7 @@ try:
         le_user = pickle.load(f)
     with open('processed_data/le_movie.pkl', 'rb') as f:
         le_movie = pickle.load(f)
-    with open('processed_data/le_director.pkl', 'rb') as f:
+    with open 'processed_data/le_director.pkl', 'rb') as f:
         le_director = pickle.load(f)
     with open('processed_data/le_actor.pkl', 'rb') as f:
         le_actor = pickle.load(f)
@@ -172,7 +172,8 @@ except Exception as e:
 # Load best checkpoint
 try:
     checkpoint_path = 'updated_checkpoint/best_checkpoint.pth'
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=True)
+    logger.info("Checkpoint keys: %s", list(checkpoint['model_state_dict'].keys()))
     model.load_state_dict(checkpoint['model_state_dict'])
     model.eval()
     logger.info("Checkpoint loaded successfully")
@@ -229,7 +230,7 @@ async def recommend_movies(user_id: int, top_k: int = 5, movie_id: int | None = 
         else:
             if movie_id not in le_movie.classes_:
                 logger.warning(f"Movie ID {movie_id} not found")
-                raise HTTPException(status_code=404, detail=f"Movie ID {movie_id} not found")
+                raise HTTPException(status_code=404, detail=f"User ID {movie_id} not found")
 
             movie_row = movies_df[movies_df['movieId'] == movie_id]
             if movie_row.empty:
@@ -265,7 +266,3 @@ async def recommend(request: RecommendRequest):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
-
-if __name__ == '__main__':
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
