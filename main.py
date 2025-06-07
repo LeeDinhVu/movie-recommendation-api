@@ -122,7 +122,7 @@ class TransformerRecommender(nn.Module):
             num_layers=2
         )
 
-        self.final_estimator = nn.Sequential(
+        self.final_fc = nn.Sequential(
             nn.Linear(128, 64),
             nn.ReLU(),
             nn.Dropout(dropout),
