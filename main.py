@@ -185,10 +185,10 @@ except Exception as e:
 class RecommendRequest(BaseModel):
     user_id: int
     movie_id: int | None = None
-    top_k: int = 5
+    top_k: int = 7
 
 # Generate recommendations
-async def recommend_movies(user_id: int, top_k: int = 5, movie_id: int | None = None):
+async def recommend_movies(user_id: int, top_k: int = 7, movie_id: int | None = None):
     try:
         logger.info(f"Generating recommendations for user_id={user_id}, top_k={top_k}, movie_id={movie_id}")
 
